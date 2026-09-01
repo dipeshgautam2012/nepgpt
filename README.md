@@ -194,7 +194,7 @@ $$\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\left(\frac{QK^{\top}}{\sqrt{d_k
 
 $Q$, $K$, and $V$ are the query, key, and value projections of the input. $d_k$ is the head size (`num_embed / num_heads`). Each is $(T, d_k)$: rows are tokens, columns are the head dimension. $QK^{\top}$ is $(T, T)$. The output is $(T, d_k)$ again.
 
-Three tokens, $d_k = 4$ ($\sqrt{d_k} = 2$):
+Three tokens, $d_k = 4$ (so $\sqrt{d_k} = 2$):
 
 $$
 Q = \begin{bmatrix}
@@ -256,7 +256,7 @@ $$\mathrm{Var}\left(\frac{QK^{\top}}{\sqrt{d_k}}\right) = \frac{d_k}{(\sqrt{d_k}
 
 Without that scale, the unscaled scores are large in magnitude. Softmax then saturates: one token gets probability $\approx 1$ and the rest $\approx 0$ (a one-hot / hard-max). Where softmax outputs sit at $0$ or $1$, its derivative is $\approx 0$, so gradients do not reach the $Q$ and $K$ projections.
 
-Take $QK^{\top} = [8,\ 2,\ {-8}]$ and $d_k = 64$ ($\sqrt{d_k} = 8$):
+Take $QK^{\top} = [8,\ 2,\ {-8}]$ and $d_k = 64$ (so $\sqrt{d_k} = 8$):
 
 $$\mathrm{softmax}([8,\ 2,\ {-8}]) \approx [1.00,\ 0.00,\ 0.00]$$
 
@@ -265,7 +265,7 @@ $$\mathrm{softmax}\left(\frac{[8,\ 2,\ {-8}]}{8}\right) = \mathrm{softmax}([1.0,
 - Unscaled: large $d_k$ $\implies$ high variance $\implies$ extreme $QK^{\top}$
 - Forward: softmax becomes one-hot
 - Backward: softmax derivative $\approx 0$ (vanishing gradient)
-- Fix: $1/\sqrt{d_k}$ keeps $\mathrm{Var} = 1$, so softmax stays smooth and gradients can flow
+- Fix: $1/\sqrt{d_k}$ keeps variance at $1$, so softmax stays smooth and gradients can flow
 
 Because this is a decoder-only language model, future positions are set to $-\infty$ before the softmax so a token cannot attend to later tokens. That causal mask is described in the paper but is not part of the formula above.
 
@@ -417,9 +417,15 @@ x = x + self.sa(self.ln1(x)) # residual connection after self-attention # (B, T,
 x = x + self.ffwd(self.ln2(x)) # residual connection after feedforward # (B, T, num_embed)
 ```
 
-Because the variance of independent random variables sums linearly ($\mathrm{Var}(A + B) \approx \mathrm{Var}(A) + \mathrm{Var}(B)$), every `x = x + sublayer(x)` adds the output variance of that branch to the residual stream.
+Because the variance of independent random variables sums linearly,
 
-Across `config.num_layers` blocks there are $N = 2L$ residual additions (two per block). Without scaling, activation variance grows linearly with `num_layers`: $\mathrm{Var}(x_{\mathrm{final}}) \approx 1.0 + 2L \cdot \sigma_0^2$.
+$$\mathrm{Var}(A + B) \approx \mathrm{Var}(A) + \mathrm{Var}(B)$$
+
+every `x = x + sublayer(x)` adds the output variance of that branch to the residual stream.
+
+Across `config.num_layers` blocks there are $N = 2L$ residual additions (two per block). Without scaling, activation variance grows linearly with `num_layers`:
+
+$$\mathrm{Var}(x_{\mathrm{final}}) \approx 1.0 + 2L \cdot \sigma_0^2$$
 
 #### 2. Who is the contributor?
 
