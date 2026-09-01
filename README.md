@@ -229,13 +229,13 @@ QK^{\top} = \begin{bmatrix}
 $$
 
 $$
-\operatorname{softmax}\!\left(\frac{QK^{\top}}{\sqrt{d_k}}\right) \approx \begin{bmatrix}
+\mathrm{softmax}\left(\frac{QK^{\top}}{\sqrt{d_k}}\right) \approx \begin{bmatrix}
 0.38 & 0.23 & 0.38 \\
 0.27 & 0.45 & 0.27 \\
 0.38 & 0.38 & 0.23
 \end{bmatrix}
 \qquad
-\operatorname{softmax}(\cdot)\,V \approx \begin{bmatrix}
+\mathrm{softmax}(\cdot) V \approx \begin{bmatrix}
 0.38 & 0.23 & 0.38 & 2.00 \\
 0.27 & 0.45 & 0.27 & 2.00 \\
 0.38 & 0.38 & 0.23 & 1.85
@@ -248,24 +248,24 @@ Row $i$ of the $3 \times 3$ softmax is how much token $i$ attends to the three t
 
 When $Q$ and $K$ have unit-variance elements, the variance of their dot product grows linearly with head size:
 
-$$\operatorname{Var}(QK^{\top}) = d_k$$
+$$\mathrm{Var}(QK^{\top}) = d_k$$
 
 Dividing by $\sqrt{d_k}$ restores unit variance:
 
-$$\operatorname{Var}\left(\frac{QK^{\top}}{\sqrt{d_k}}\right) = \frac{d_k}{(\sqrt{d_k})^2} = 1$$
+$$\mathrm{Var}\left(\frac{QK^{\top}}{\sqrt{d_k}}\right) = \frac{d_k}{(\sqrt{d_k})^2} = 1$$
 
 Without that scale, the unscaled scores are large in magnitude. Softmax then saturates: one token gets probability $\approx 1$ and the rest $\approx 0$ (a one-hot / hard-max). Where softmax outputs sit at $0$ or $1$, its derivative is $\approx 0$, so gradients do not reach the $Q$ and $K$ projections.
 
 Take $QK^{\top} = [8,\ 2,\ {-8}]$ and $d_k = 64$ ($\sqrt{d_k} = 8$):
 
-$$\operatorname{softmax}([8,\ 2,\ {-8}]) \approx [1.00,\ 0.00,\ 0.00]$$
+$$\mathrm{softmax}([8,\ 2,\ {-8}]) \approx [1.00,\ 0.00,\ 0.00]$$
 
-$$\operatorname{softmax}\left(\frac{[8,\ 2,\ {-8}]}{8}\right) = \operatorname{softmax}([1.0,\ 0.25,\ {-1.0}]) \approx [0.62,\ 0.29,\ 0.08]$$
+$$\mathrm{softmax}\left(\frac{[8,\ 2,\ {-8}]}{8}\right) = \mathrm{softmax}([1.0,\ 0.25,\ {-1.0}]) \approx [0.62,\ 0.29,\ 0.08]$$
 
 - Unscaled: large $d_k$ $\implies$ high variance $\implies$ extreme $QK^{\top}$
 - Forward: softmax becomes one-hot
 - Backward: softmax derivative $\approx 0$ (vanishing gradient)
-- Fix: $1/\sqrt{d_k}$ keeps $\operatorname{Var} = 1$, so softmax stays smooth and gradients can flow
+- Fix: $1/\sqrt{d_k}$ keeps $\mathrm{Var} = 1$, so softmax stays smooth and gradients can flow
 
 Because this is a decoder-only language model, future positions are set to $-\infty$ before the softmax so a token cannot attend to later tokens. That causal mask is described in the paper but is not part of the formula above.
 
@@ -417,9 +417,9 @@ x = x + self.sa(self.ln1(x)) # residual connection after self-attention # (B, T,
 x = x + self.ffwd(self.ln2(x)) # residual connection after feedforward # (B, T, num_embed)
 ```
 
-Because the variance of independent random variables sums linearly ($\operatorname{Var}(A + B) \approx \operatorname{Var}(A) + \operatorname{Var}(B)$), every `x = x + sublayer(x)` adds the output variance of that branch to the residual stream.
+Because the variance of independent random variables sums linearly ($\mathrm{Var}(A + B) \approx \mathrm{Var}(A) + \mathrm{Var}(B)$), every `x = x + sublayer(x)` adds the output variance of that branch to the residual stream.
 
-Across `config.num_layers` blocks there are $N = 2 \times \text{num\_layers}$ residual additions (two per block). Without scaling, activation variance grows linearly with `num_layers`: $\operatorname{Var}(x_{\text{final}}) \approx 1.0 + 2 \cdot \text{num\_layers} \cdot \sigma_0^2$.
+Across `config.num_layers` blocks there are $N = 2 \times \text{num\_layers}$ residual additions (two per block). Without scaling, activation variance grows linearly with `num_layers`: $\mathrm{Var}(x_{\text{final}}) \approx 1.0 + 2 \cdot \text{num\_layers} \cdot \sigma_0^2$.
 
 #### 2. Who is the contributor?
 
@@ -441,7 +441,7 @@ Q, K, and V are not scaled by depth. LayerNorm (`ln1`, `ln2`) keeps their inputs
 
 Scaling a weight matrix by $\gamma$ scales output activation variance by $\gamma^2$:
 
-$$\operatorname{Var}(\gamma \cdot Y) = \gamma^2 \cdot \operatorname{Var}(Y)$$
+$$\mathrm{Var}(\gamma \cdot Y) = \gamma^2 \cdot \mathrm{Var}(Y)$$
 
 To give each of the $N = 2 \times \text{num\_layers}$ residual paths a fraction $1 / (2 \cdot \text{num\_layers})$ of the baseline variance, the residual-projection standard deviation is:
 
@@ -449,7 +449,7 @@ $$\text{std}_{\text{residual}} = \frac{0.02}{\sqrt{2 \cdot \text{num\_layers}}} 
 
 Summing across all $2 \cdot \text{num\_layers}$ paths then keeps final variance near unit scale:
 
-$$\operatorname{Var}(x_{\text{final}}) = 1.0 + \sum_{i=1}^{2 \cdot \text{num\_layers}} \left(\frac{1}{2 \cdot \text{num\_layers}} \sigma_0^2\right) = 1.0 + \sigma_0^2 \approx 1.0$$
+$$\mathrm{Var}(x_{\text{final}}) = 1.0 + \sum_{i=1}^{2 \cdot \text{num\_layers}} \left(\frac{1}{2 \cdot \text{num\_layers}} \sigma_0^2\right) = 1.0 + \sigma_0^2 \approx 1.0$$
 
 `model.py` applies this scale by setting `merges_to_residual = True` on `self.proj` and `self.net[2]`, then using `std = 0.02 * (2 * num_layers) ** -0.5` for those layers in `_init_weights`.
 
