@@ -242,7 +242,7 @@ $$
 \end{bmatrix}
 $$
 
-Row $i$ of the $3 \times 3$ softmax is how much token $i$ attends to the three tokens. That row weights the three rows of $V$.
+The $3 \times 3$ softmax is the attention weights: row $i$ is how much token $i$ attends to the three tokens. `Attention(Q, K, V)` is those weights times $V$: the $3 \times 4$ matrix, where each row is that token's output vector ($d_k = 4$).
 
 #### Why divide by $\sqrt{d_k}$
 
@@ -278,7 +278,7 @@ class AttentionHead(nn.Module):
         q = self.query(x) # (B, T, head_size)
         wei = q @ k.transpose(-2, -1) * self.head_size ** -0.5 # (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = F.softmax(wei, dim=-1)
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
         out = wei @ self.value(x) # (B, T, head_size)
         return out
 ```

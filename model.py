@@ -35,7 +35,7 @@ class AttentionHead(nn.Module):
         q = self.query(x) # (B, T, head_size)
         wei = q @ k.transpose(-2, -1) * self.head_size ** -0.5 # (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = F.softmax(wei, dim=-1)
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
         wei = self.dropout(wei)
         out = wei @ self.value(x) # (B, T, head_size)
         return out
