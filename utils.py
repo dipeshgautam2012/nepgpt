@@ -4,6 +4,7 @@ from dataset import BatchSampler, CharTokenizer
 def estimate_loss(model, train_sampler: BatchSampler, val_sampler: BatchSampler, eval_iters: int = 200):
     """Computes average evaluation loss over train and val samplers without mutating state."""
     out = {}
+    # set model to evaluation mode
     model.eval()
 
     samplers = {"train": train_sampler, "val": val_sampler}
@@ -21,5 +22,6 @@ def estimate_loss(model, train_sampler: BatchSampler, val_sampler: BatchSampler,
 
         out[split_name] = losses[:actual_steps].mean().item()
 
+    # set model back to training mode
     model.train()
     return out

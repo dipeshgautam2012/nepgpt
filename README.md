@@ -130,11 +130,11 @@ After training (`model.generate`):
 @dataclass
 class ModelConfig:
     vocab_size: int = 50257
-    block_size: int = 256
-    num_embed: int = 384
-    num_heads: int = 6
-    num_layers: int = 6
-    dropout: float = 0.0
+    block_size: int = 256 # context window
+    num_embed: int = 384 # embedding dimension
+    num_heads: int = 6 # number of attention heads
+    num_layers: int = 6 # number of transformer blocks
+    dropout: float = 0.0 # dropout rate
 ```
 
 ```python
@@ -173,13 +173,13 @@ class GPTModel(nn.Module):
 
         ...
 
-        tok_emb = self.token_embedding_table(idx)
+        tok_emb = self.token_embedding_table(idx) # (B,T,num_embed)
 
         pos_emb = self.position_embedding_table(
             torch.arange(T, device=idx.device)
-        )
+        ) # (T,num_embed); the arange needs to on the same device as idx
 
-        x = tok_emb + pos_emb
+        x = tok_emb + pos_emb # (B,T,num_embed)
 ```
 
 The resulting representation is passed through the Transformer blocks.
@@ -188,19 +188,98 @@ The resulting representation is passed through the Transformer blocks.
 
 Self-attention allows each token to attend to earlier tokens in the sequence and use their representations when computing its own representation.
 
-Because this is a decoder-only language model, the attention mechanism uses a causal mask so that a token cannot attend to future tokens.
+Each head computes scaled dot-product attention, as in Attention Is All You Need:
+
+$$\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\left(\frac{QK^{\top}}{\sqrt{d_k}}\right)V$$
+
+$Q$, $K$, and $V$ are the query, key, and value projections of the input. $d_k$ is the head size (`num_embed / num_heads`). Each is $(T, d_k)$: rows are tokens, columns are the head dimension. $QK^{\top}$ is $(T, T)$. The output is $(T, d_k)$ again.
+
+Three tokens, $d_k = 4$ ($\sqrt{d_k} = 2$):
+
+$$
+Q = \begin{bmatrix}
+1 & 0 & 1 & 0 \\
+0 & 1 & 0 & 1 \\
+1 & 1 & 0 & 0
+\end{bmatrix},\quad
+K = \begin{bmatrix}
+1 & 0 & 0 & 0 \\
+0 & 1 & 0 & 0 \\
+0 & 0 & 1 & 0
+\end{bmatrix},\quad
+V = \begin{bmatrix}
+1 & 0 & 0 & 1 \\
+0 & 1 & 0 & 2 \\
+0 & 0 & 1 & 3
+\end{bmatrix}
+$$
+
+$$
+QK^{\top} = \begin{bmatrix}
+1 & 0 & 1 \\
+0 & 1 & 0 \\
+1 & 1 & 0
+\end{bmatrix}
+\qquad
+\frac{QK^{\top}}{\sqrt{d_k}} = \begin{bmatrix}
+0.5 & 0 & 0.5 \\
+0 & 0.5 & 0 \\
+0.5 & 0.5 & 0
+\end{bmatrix}
+$$
+
+$$
+\operatorname{softmax}\!\left(\frac{QK^{\top}}{\sqrt{d_k}}\right) \approx \begin{bmatrix}
+0.38 & 0.23 & 0.38 \\
+0.27 & 0.45 & 0.27 \\
+0.38 & 0.38 & 0.23
+\end{bmatrix}
+\qquad
+\operatorname{softmax}(\cdot)\,V \approx \begin{bmatrix}
+0.38 & 0.23 & 0.38 & 2.00 \\
+0.27 & 0.45 & 0.27 & 2.00 \\
+0.38 & 0.38 & 0.23 & 1.85
+\end{bmatrix}
+$$
+
+Row $i$ of the $3 \times 3$ softmax is how much token $i$ attends to the three tokens. That row weights the three rows of $V$.
+
+#### Why divide by $\sqrt{d_k}$
+
+When $Q$ and $K$ have unit-variance elements, the variance of their dot product grows linearly with head size:
+
+$$\operatorname{Var}(QK^{\top}) = d_k$$
+
+Dividing by $\sqrt{d_k}$ restores unit variance:
+
+$$\operatorname{Var}\left(\frac{QK^{\top}}{\sqrt{d_k}}\right) = \frac{d_k}{(\sqrt{d_k})^2} = 1$$
+
+Without that scale, the unscaled scores are large in magnitude. Softmax then saturates: one token gets probability $\approx 1$ and the rest $\approx 0$ (a one-hot / hard-max). Where softmax outputs sit at $0$ or $1$, its derivative is $\approx 0$, so gradients do not reach the $Q$ and $K$ projections.
+
+Take $QK^{\top} = [8,\ 2,\ {-8}]$ and $d_k = 64$ ($\sqrt{d_k} = 8$):
+
+$$\operatorname{softmax}([8,\ 2,\ {-8}]) \approx [1.00,\ 0.00,\ 0.00]$$
+
+$$\operatorname{softmax}\left(\frac{[8,\ 2,\ {-8}]}{8}\right) = \operatorname{softmax}([1.0,\ 0.25,\ {-1.0}]) \approx [0.62,\ 0.29,\ 0.08]$$
+
+- Unscaled: large $d_k$ $\implies$ high variance $\implies$ extreme $QK^{\top}$
+- Forward: softmax becomes one-hot
+- Backward: softmax derivative $\approx 0$ (vanishing gradient)
+- Fix: $1/\sqrt{d_k}$ keeps $\operatorname{Var} = 1$, so softmax stays smooth and gradients can flow
+
+Because this is a decoder-only language model, future positions are set to $-\infty$ before the softmax so a token cannot attend to later tokens. That causal mask is described in the paper but is not part of the formula above.
 
 ```python
 class AttentionHead(nn.Module):
 
     def forward(self, x):
 
-        k = self.key(x)
-        q = self.query(x)
-        wei = q @ k.transpose(-2, -1) * self.head_size ** -0.5
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        k = self.key(x) # (B, T, head_size)
+        q = self.query(x) # (B, T, head_size)
+        wei = q @ k.transpose(-2, -1) * self.head_size ** -0.5 # (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=-1)
-        out = wei @ self.value(x)
+        out = wei @ self.value(x) # (B, T, head_size)
         return out
 ```
 
@@ -223,9 +302,9 @@ class MultiHeadAttention(nn.Module):
 
     def forward(self, x):
 
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = torch.cat([h(x) for h in self.heads], dim=-1) # (B, T, num_heads * head_size)
 
-        out = self.proj(out)
+        out = self.proj(out) # (B, T, num_embed)
 
         ...
 ```
@@ -245,9 +324,10 @@ class Block(nn.Module):
 
     def forward(self, x):
 
-        x = x + self.sa(self.ln1(x))
+        # layers: layer normalization -> self-attention -> residual connection -> layer normalization -> feedforward -> residual connection
+        x = x + self.sa(self.ln1(x)) # residual connection after self-attention # (B, T, num_embed)
 
-        x = x + self.ffwd(self.ln2(x))
+        x = x + self.ffwd(self.ln2(x)) # residual connection after feedforward # (B, T, num_embed)
 
         return x
 ```
@@ -267,6 +347,7 @@ class GPTModel(nn.Module):
 
         ...
 
+        # weight sharing between token embedding and language model head
         self.token_embedding_table.weight = self.head.weight
 ```
 
@@ -278,15 +359,24 @@ Linear and embedding weights are initialized from a normal distribution with mea
 
 Linear biases are initialized to zero, while LayerNorm uses PyTorch's default initialization.
 
+Residual-output projections in `model.py` are then scaled by $1/\sqrt{2 \cdot \text{num\_layers}}$, as described below.
+
 ```python
 class GPTModel(nn.Module):
 
     def _init_weights(self, module):
 
+        # Initialize weights for linear and embedding layers; not other layrs like LayerNorm etc.
         if isinstance(module, nn.Linear):
 
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            std = 0.02
+            # Scale down the std for residual projection layers to avoid large activations.
 
+            if getattr(module, 'merges_to_residual', False):
+                std *= (2 * self.config.num_layers) ** -0.5  # times 2: two residual additions per block
+
+            nn.init.normal_(module.weight, mean=0.0, std=std) # mean=0.0, std=std as described in GPT-2 paper
+            # Linear layers may have bias, so initialized to zero as described in GPT-2 paper
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
@@ -294,6 +384,74 @@ class GPTModel(nn.Module):
 
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 ```
+
+> [!NOTE]
+> `full_working_gpt.ipynb` uses a flat weight initialization (`std=0.02` for every linear and embedding layer) for simplicity. It does not scale residual-projection weights by `num_layers`.
+>
+> ```python
+> class GPTModel(nn.Module):
+>
+>     def _init_weights(self, module):
+>
+>         # Initialize weights for linear and embedding layers; not other layrs like LayerNorm etc.
+>         if isinstance(module, nn.Linear):
+>
+>             nn.init.normal_(module.weight, mean=0.0, std=0.02) # mean=0.0, std=0.02 as described in GPT-2 paper
+>             # Linear layers may have bias, so initialized to zero as described in GPT-2 paper
+>             if module.bias is not None:
+>                 nn.init.zeros_(module.bias)
+>
+>         elif isinstance(module, nn.Embedding):
+>
+>             nn.init.normal_(module.weight, mean=0.0, std=0.02)
+> ```
+
+### Residual Scaling
+
+#### 1. What contributes to increased variance per block?
+
+In `Block.forward(x)`, the hidden state undergoes two sequential residual additions:
+
+```python
+x = x + self.sa(self.ln1(x)) # residual connection after self-attention # (B, T, num_embed)
+x = x + self.ffwd(self.ln2(x)) # residual connection after feedforward # (B, T, num_embed)
+```
+
+Because the variance of independent random variables sums linearly ($\operatorname{Var}(A + B) \approx \operatorname{Var}(A) + \operatorname{Var}(B)$), every `x = x + sublayer(x)` adds the output variance of that branch to the residual stream.
+
+Across `config.num_layers` blocks there are $N = 2 \times \text{num\_layers}$ residual additions (two per block). Without scaling, activation variance grows linearly with `num_layers`: $\operatorname{Var}(x_{\text{final}}) \approx 1.0 + 2 \cdot \text{num\_layers} \cdot \sigma_0^2$.
+
+#### 2. Who is the contributor?
+
+The two processing branches inside `Block`:
+
+1. Self-attention (`self.sa`)
+2. Feed-forward (`self.ffwd`)
+
+#### 3. Whose weights should be controlled?
+
+Only the layers that write back into the residual stream (`x = x + ...`):
+
+- `MultiHeadAttention.proj`
+- `FeedForward.net[2]` (the output linear)
+
+Q, K, and V are not scaled by depth. LayerNorm (`ln1`, `ln2`) keeps their inputs near unit scale, and $1/\sqrt{d_k}$ already keeps attention logits from growing. Those two stop activations inside the head from exploding. What still grows is the residual add, so only `proj` and the feed-forward output get $1/\sqrt{2 \cdot \text{num\_layers}}$. The FFN expand layer (`self.net[0]`) stays at $\sigma_0 = 0.02$ for the same reason.
+
+#### 4. The mathematical theory
+
+Scaling a weight matrix by $\gamma$ scales output activation variance by $\gamma^2$:
+
+$$\operatorname{Var}(\gamma \cdot Y) = \gamma^2 \cdot \operatorname{Var}(Y)$$
+
+To give each of the $N = 2 \times \text{num\_layers}$ residual paths a fraction $1 / (2 \cdot \text{num\_layers})$ of the baseline variance, the residual-projection standard deviation is:
+
+$$\text{std}_{\text{residual}} = \frac{0.02}{\sqrt{2 \cdot \text{num\_layers}}} = 0.02 \times (2 \cdot \text{num\_layers})^{-0.5}$$
+
+Summing across all $2 \cdot \text{num\_layers}$ paths then keeps final variance near unit scale:
+
+$$\operatorname{Var}(x_{\text{final}}) = 1.0 + \sum_{i=1}^{2 \cdot \text{num\_layers}} \left(\frac{1}{2 \cdot \text{num\_layers}} \sigma_0^2\right) = 1.0 + \sigma_0^2 \approx 1.0$$
+
+`model.py` applies this scale by setting `merges_to_residual = True` on `self.proj` and `self.net[2]`, then using `std = 0.02 * (2 * num_layers) ** -0.5` for those layers in `_init_weights`.
 
 ## Project Structure
 
