@@ -359,7 +359,7 @@ Linear and embedding weights are initialized from a normal distribution with mea
 
 Linear biases are initialized to zero, while LayerNorm uses PyTorch's default initialization.
 
-Residual-output projections in `model.py` are then scaled by $1/\sqrt{2 \cdot \text{num\_layers}}$, as described below.
+Residual-output projections in `model.py` are then scaled by $1/\sqrt{2L}$, where $L$ is `num_layers`, as described below.
 
 ```python
 class GPTModel(nn.Module):
@@ -419,7 +419,7 @@ x = x + self.ffwd(self.ln2(x)) # residual connection after feedforward # (B, T, 
 
 Because the variance of independent random variables sums linearly ($\mathrm{Var}(A + B) \approx \mathrm{Var}(A) + \mathrm{Var}(B)$), every `x = x + sublayer(x)` adds the output variance of that branch to the residual stream.
 
-Across `config.num_layers` blocks there are $N = 2 \times \text{num\_layers}$ residual additions (two per block). Without scaling, activation variance grows linearly with `num_layers`: $\mathrm{Var}(x_{\text{final}}) \approx 1.0 + 2 \cdot \text{num\_layers} \cdot \sigma_0^2$.
+Across `config.num_layers` blocks there are $N = 2L$ residual additions (two per block). Without scaling, activation variance grows linearly with `num_layers`: $\mathrm{Var}(x_{\mathrm{final}}) \approx 1.0 + 2L \cdot \sigma_0^2$.
 
 #### 2. Who is the contributor?
 
@@ -435,7 +435,7 @@ Only the layers that write back into the residual stream (`x = x + ...`):
 - `MultiHeadAttention.proj`
 - `FeedForward.net[2]` (the output linear)
 
-Q, K, and V are not scaled by depth. LayerNorm (`ln1`, `ln2`) keeps their inputs near unit scale, and $1/\sqrt{d_k}$ already keeps attention logits from growing. Those two stop activations inside the head from exploding. What still grows is the residual add, so only `proj` and the feed-forward output get $1/\sqrt{2 \cdot \text{num\_layers}}$. The FFN expand layer (`self.net[0]`) stays at $\sigma_0 = 0.02$ for the same reason.
+Q, K, and V are not scaled by depth. LayerNorm (`ln1`, `ln2`) keeps their inputs near unit scale, and $1/\sqrt{d_k}$ already keeps attention logits from growing. Those two stop activations inside the head from exploding. What still grows is the residual add, so only `proj` and the feed-forward output get $1/\sqrt{2L}$. The FFN expand layer (`self.net[0]`) stays at $\sigma_0 = 0.02$ for the same reason.
 
 #### 4. The mathematical theory
 
@@ -443,13 +443,13 @@ Scaling a weight matrix by $\gamma$ scales output activation variance by $\gamma
 
 $$\mathrm{Var}(\gamma \cdot Y) = \gamma^2 \cdot \mathrm{Var}(Y)$$
 
-To give each of the $N = 2 \times \text{num\_layers}$ residual paths a fraction $1 / (2 \cdot \text{num\_layers})$ of the baseline variance, the residual-projection standard deviation is:
+To give each of the $N = 2L$ residual paths a fraction $1/(2L)$ of the baseline variance, the residual-projection standard deviation is:
 
-$$\text{std}_{\text{residual}} = \frac{0.02}{\sqrt{2 \cdot \text{num\_layers}}} = 0.02 \times (2 \cdot \text{num\_layers})^{-0.5}$$
+$$\mathrm{std}_{\mathrm{residual}} = \frac{0.02}{\sqrt{2L}} = 0.02 \times (2L)^{-0.5}$$
 
-Summing across all $2 \cdot \text{num\_layers}$ paths then keeps final variance near unit scale:
+Summing across all $2L$ paths then keeps final variance near unit scale:
 
-$$\mathrm{Var}(x_{\text{final}}) = 1.0 + \sum_{i=1}^{2 \cdot \text{num\_layers}} \left(\frac{1}{2 \cdot \text{num\_layers}} \sigma_0^2\right) = 1.0 + \sigma_0^2 \approx 1.0$$
+$$\mathrm{Var}(x_{\mathrm{final}}) = 1.0 + \sum_{i=1}^{2L} \left(\frac{1}{2L} \sigma_0^2\right) = 1.0 + \sigma_0^2 \approx 1.0$$
 
 `model.py` applies this scale by setting `merges_to_residual = True` on `self.proj` and `self.net[2]`, then using `std = 0.02 * (2 * num_layers) ** -0.5` for those layers in `_init_weights`.
 
