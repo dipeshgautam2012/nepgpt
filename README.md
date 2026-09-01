@@ -58,7 +58,7 @@ Batch sampling options include:
 After training (`model.generate`):
 
 ```
-एक्‌ दिन्‌ नारद सत्यलोक पुभिगया । १९० १ इसमालाई सत्रीव प्यटा पिएर भरिदीयो । 
+एक्‌ दिन्‌ नारद सत्यलोक पुगिगया । १९० १ इसमालाई सत्रीव प्यटा पिएर भरिदीयो । 
 क अनेक्‌ शिर पौ कहीं । २७ = 
 
 
@@ -351,7 +351,7 @@ class GPTModel(nn.Module):
         self.token_embedding_table.weight = self.head.weight
 ```
 
-This weight tying connects the representation used to encode input tokens with the representation used to predict output tokens.
+This weight sharing connects the representation used to encode input tokens with the representation used to predict output tokens.
 
 ### Weight Initialization
 
